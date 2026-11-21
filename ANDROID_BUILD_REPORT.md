@@ -1,55 +1,30 @@
-# Android Build & Packaging Report — COMBAT FRONTS (جبهات القتال) v2.1.0
+# ANDROID BUILD REPORT — COMBAT FRONTS (جبهات القتال) v2.1.0
 
-**Build Date:** 2026-11-20  
-**Build Tool:** Gradle (`gradle :app:assembleDebug` + `gradle :app:testDebugUnitTest --rerun-tasks`)  
-**Build Result:** **BUILD SUCCESSFUL** (Zero Kotlin compiler errors, zero compiler warnings)
+**برمجة وتطوير معتز العلقمي – تعز – اليمن – 2026م**
 
----
+## 1. Build Configuration Summary
+- **Application Name:** `جبهات القتال` (`Combat Fronts` in English locale)
+- **Package / Application ID:** `com.example`
+- **Version:** `2.1.0` (`versionCode = 3`)
+- **Min SDK / Target SDK / Compile SDK:** `24` (supports Android 9.0 API 28+) / `36` / `36.1`
+- **Rendering Backend:** Universal OpenGL ES 2.0/3.0 GLSL + Jetpack Compose Material 3
+- **Connectivity:** **100% Offline** (zero `INTERNET` permission in `AndroidManifest.xml`; only `VIBRATE` declared)
+- **Build Type & Signing:** Debug-signed (`debugConfig` / `debug.keystore`) — *Release keystore (`my-upload-key.jks`) is externally supplied via environment variables (`KEYSTORE_PATH`, `STORE_PASSWORD`, `KEY_PASSWORD`) for production store signing.*
 
-## 1. Application Metadata & Configuration
+## 2. Verified Build & Packaging Evidence
+- **Gradle Build Command:** `gradle :app:assembleDebug` — **BUILD SUCCESSFUL**
+- **Unit & Robolectric Tests:** `gradle :app:testDebugUnitTest --rerun-tasks` — **30 / 30 PASSED**
+- **Archive Integrity:** `unzip -tq COMBAT-FRONTS-v2.1.0-SOURCE.zip` — **No errors detected**
 
-| Property | Verified Value |
-| :--- | :--- |
-| **App Display Name (`app_name`)** | `جبهات القتال` |
-| **Platform Metadata Name (`metadata.json`)** | `جبهات القتال` (`MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` preserved) |
-| **Application ID** | `com.example` |
-| **Version Name** | `2.1.0` |
-| **Version Code** | `3` |
-| **Min SDK / Target SDK** | `24` (Android 7.0+) / `36` (covers Android 9.0 / API 28+ target) |
-| **Screen Orientation** | `sensorLandscape` |
-| **RTL Support** | `android:supportsRtl="true"` |
-| **Declared Permissions** | `android.permission.VIBRATE` ONLY (**Zero `INTERNET` permission — 100% offline**) |
-| **Graphics API** | OpenGL ES 2.0/3.0 universal (`glEsVersion="0x00020000"`, `required="false"` graceful fallback) |
+## 3. Delivered Artifacts
+| Artifact | Size | SHA-256 Checksum | Status |
+|---|---:|---|---|
+| `COMBAT-FRONTS-v2.1.0-ARM64.apk` | 17 MB | `c9f7587bbee0487324d41ba595f4c4a39d6054f4ca3d8a6e5efe216bf614f6eb` | **VERIFIED BUILT** (Debug-signed installable APK) |
+| `COMBAT-FRONTS-v2.1.0-SOURCE.zip` | 385 KB | `01b6711ff5f32ce223456bd051a2754a37bab55a9bb5920e28d24736f1d9cca1` | **VERIFIED ARCHIVE** (`unzip -tq` PASS) |
 
----
-
-## 2. Verified APK Deliverable
-
-- **Output Path:** `/COMBAT-FRONTS-v2.1.0-ARM64.apk` (copied from `app/build/outputs/apk/debug/app-debug.apk`)
-- **Exact File Size:** `17,166,083` bytes (~16.37 MiB)
-- **SHA-256 Checksum:** `aeb6b6da6dfd4595987bd8dbc06fe07b693ec3558892da98c4ef441847ccf0d2`
-- **ABI / Native Libraries Verified (`unzip -l`):**
-  - `lib/arm64-v8a/libandroidx.graphics.path.so` (ARM64-v8a verified)
-  - Universal DEX bytecode (`classes.dex`–`classes9.dex`) + multi-ABI compatibility (`armeabi-v7a`, `x86`, `x86_64`)
-  - `AndroidManifest.xml`, compiled resources, vector adaptive launcher icon + PNG32 mipmaps (`mdpi`–`xxxhdpi`).
-- **Signing Transparency:** Signed with the workspace debug keystore (`debug.keystore` via `signingConfigs.debugConfig`). Because private Google Play upload keystore credentials are not present in the cloud container, this APK is ready for direct sideloading/testing on ARM64 Android devices. For Google Play Store publication, build a signed release bundle (`gradle :app:bundleRelease`) locally using your private upload keystore.
-
----
-
-## 3. Clean Source Archive Deliverable
-
-- **Output Path:** `/COMBAT-FRONTS-v2.1.0-SOURCE.zip`
-- **Included:** Complete Kotlin/Compose/OpenGL ES 3.0 source code, Android resources, Gradle build configuration, unit/Robolectric tests, and all 14 Prompt 05 engineering reports.
-- **Excluded:** `build/`, `app/build/`, `.gradle/`, `.git/`, `.aistudio/`, `.build-outputs/`, `*.apk`, `*.zip`.
-- **Integrity Verification:** Verified via `unzip -t COMBAT-FRONTS-v2.1.0-SOURCE.zip` with zero archive errors.
-
----
-
-## 4. Verification Summary
-
-| Verification Gate | Command / Method | Result |
-| :--- | :--- | :---: |
-| **Debug APK Assembly** | `gradle :app:assembleDebug` | **PASS** |
-| **Unit & Robolectric Tests** | `gradle :app:testDebugUnitTest --rerun-tasks` | **PASS (29/29)** |
-| **Offline Permission Audit** | `AndroidManifest.xml` check | **PASS (0 network permissions)** |
-| **Physical ARM64 Device Install / ADB** | N/A in cloud container | **PENDING_PHYSICAL_DEVICE** |
+## 4. Acceptance Criteria Status
+- **Project Compilation & APK Packaging:** VERIFIED (`BUILD SUCCESSFUL`)
+- **Automated Core Gameplay, AI, Equipment, Save/Load & Audio Tests:** VERIFIED (`30/30 PASS`)
+- **Offline Permission Audit:** VERIFIED (zero `INTERNET` permission)
+- **Physical ARM64 Device Installation & FPS Profiling:** **NOT VERIFIED** (no physical device / ADB available in cloud build container)
+- **Production Release Keystore Signing:** **NOT VERIFIED** (debug-signed APK produced; release signing requires user's private upload keystore credentials)

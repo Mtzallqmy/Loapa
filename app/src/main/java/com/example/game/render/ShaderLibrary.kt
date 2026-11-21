@@ -50,6 +50,8 @@ object ShaderLibrary {
         uniform vec3 uFogColor;
         uniform float uFogDensity;
         uniform float uNightFactor;
+        uniform vec3 uFlashPos;
+        uniform vec3 uFlashColor;
 
         float hash21(vec2 p) {
             p = fract(p * vec2(123.34, 456.21));
@@ -120,6 +122,16 @@ object ShaderLibrary {
             float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.14;
 
             vec3 lit = albedo * (skyAmb + uSunColor * ndotl * 1.08) + specColor + uFogColor * rim;
+            // Dynamic muzzle flash & explosion point-light illumination
+            float flashEnergy = uFlashColor.r + uFlashColor.g + uFlashColor.b;
+            if (flashEnergy > 0.01) {
+                vec3 toFlash = uFlashPos - vWorldPos;
+                float fDist = length(toFlash);
+                float atten = 1.0 / (1.0 + 0.09 * fDist * fDist);
+                vec3 fDir = fDist > 0.001 ? (toFlash / fDist) : vec3(0.0, 1.0, 0.0);
+                float fNdotL = max(dot(N, fDir), 0.28);
+                lit += albedo * uFlashColor * (fNdotL * atten * 1.85);
+            }
             lit += albedo * emissiveAdd;
 
             // Exponential squared atmospheric fog

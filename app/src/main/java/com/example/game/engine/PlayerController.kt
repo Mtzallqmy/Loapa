@@ -26,7 +26,9 @@ data class PlayerInputState(
     val switchWeaponPressed: Boolean = false,
     val interactPressed: Boolean = false,
     val vaultPressed: Boolean = false,
-    val toggleShoulderPressed: Boolean = false
+    val toggleShoulderPressed: Boolean = false,
+    val grenadePressed: Boolean = false,
+    val medkitPressed: Boolean = false
 )
 
 data class WeaponSlotRuntime(
@@ -59,6 +61,12 @@ class PlayerController(
     var armor: Float = 100f
     var maxArmor: Float = 100f
     var stamina: Float = 100f
+    var grenades: Int = 3
+    val maxGrenades: Int = 3
+    var grenadeCooldown: Float = 0f
+    var medkits: Int = 2
+    val maxMedkits: Int = 3
+    var medkitCooldown: Float = 0f
 
     var isGrounded: Boolean = true
     var isCrouching: Boolean = false
@@ -194,6 +202,26 @@ class PlayerController(
         }
         health = min(maxHealth, health + 35f)
         armor = maxArmor
+        grenades = min(maxGrenades, grenades + 1)
+        medkits = min(maxMedkits, medkits + 1)
+    }
+
+    fun useMedkit(): Boolean {
+        if (!isAlive || medkits <= 0 || medkitCooldown > 0f || (health >= maxHealth - 1f && armor >= maxArmor - 1f)) {
+            return false
+        }
+        medkits -= 1
+        medkitCooldown = 2.4f
+        health = min(maxHealth, health + 55f)
+        armor = min(maxArmor, armor + 25f)
+        return true
+    }
+
+    fun consumeGrenade(): Boolean {
+        if (!isAlive || grenades <= 0 || grenadeCooldown > 0f || isVaulting) return false
+        grenades -= 1
+        grenadeCooldown = 1.4f
+        return true
     }
 
     fun applyDamage(
@@ -268,6 +296,8 @@ class PlayerController(
         pendingFallDamage = 0f
 
         if (respawnProtectionTimer > 0f) respawnProtectionTimer = max(0f, respawnProtectionTimer - dt)
+        if (grenadeCooldown > 0f) grenadeCooldown = max(0f, grenadeCooldown - dt)
+        if (medkitCooldown > 0f) medkitCooldown = max(0f, medkitCooldown - dt)
         if (fireCooldown > 0f) fireCooldown = max(0f, fireCooldown - dt)
         if (weaponSwitchTimer > 0f) weaponSwitchTimer = max(0f, weaponSwitchTimer - dt)
         if (muzzleFlashTimer > 0f) muzzleFlashTimer = max(0f, muzzleFlashTimer - dt)

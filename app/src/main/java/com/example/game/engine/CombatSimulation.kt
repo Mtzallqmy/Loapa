@@ -30,6 +30,7 @@ import com.example.game.data.WeatherCondition
 import com.example.game.localization.GameStrings
 import com.example.game.save.PlayerSaveData
 import com.example.game.save.SavedCheckpoint
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -52,12 +53,52 @@ data class ImpactParticle(
     val maxLife: Float
 )
 
+data class ActiveGrenade(
+    var position: Vec3,
+    var velocity: Vec3,
+    var fuse: Float = 1.65f
+)
+
+data class ExplosionFlash(
+    val position: Vec3,
+    var life: Float = 0.36f,
+    val maxLife: Float = 0.36f,
+    val radius: Float = 2.7f
+)
+
+data class KillFeedEntry(
+    val text: String,
+    val isHeadshot: Boolean,
+    val xpBonus: Int,
+    var life: Float = 3.2f
+)
+
+data class ProjectedEnemyBar(
+    val screenX: Float,
+    val screenY: Float,
+    val healthFrac: Float,
+    val isBoss: Boolean,
+    val isSniper: Boolean
+)
+
+data class ObjectiveEdgeIndicator(
+    val screenX: Float,
+    val screenY: Float,
+    val angleDeg: Float,
+    val offScreen: Boolean,
+    val distanceMeters: Int
+)
+
 sealed class SimAudioEvent {
-    data class WeaponFired(val weaponId: WeaponId) : SimAudioEvent()
+    data class WeaponFired(val weaponId: WeaponId, val suppressed: Boolean = false) : SimAudioEvent()
     data object Reload : SimAudioEvent()
     data class Footstep(val material: SurfaceMaterial) : SimAudioEvent()
     data class HitConfirm(val headshot: Boolean) : SimAudioEvent()
     data class Impact(val material: SurfaceMaterial) : SimAudioEvent()
+    data object Explosion : SimAudioEvent()
+    data object GrenadeThrown : SimAudioEvent()
+    data object MedkitUsed : SimAudioEvent()
+    data object RoverEnginePulse : SimAudioEvent()
     data object PlayerDamaged : SimAudioEvent()
     data object Checkpoint : SimAudioEvent()
     data object ObjectiveComplete : SimAudioEvent()
@@ -153,7 +194,16 @@ data class HudSnapshot(
     val challengeTimeRemaining: Float = 0f,
     val inVehicle: Boolean = false,
     val vehicleHealth: Float = 280f,
-    val vehicleMaxHealth: Float = 280f
+    val vehicleMaxHealth: Float = 280f,
+    // v2.2 Tactical Equipment, Auto-Fire, Kill Feed, Onboarding & 3D Projections
+    val grenades: Int = 3,
+    val medkits: Int = 2,
+    val hasTargetLock: Boolean = false,
+    val autoFireEnabled: Boolean = false,
+    val killFeed: List<KillFeedEntry> = emptyList(),
+    val tutorialHint: String? = null,
+    val enemyBars: List<ProjectedEnemyBar> = emptyList(),
+    val objectiveIndicator: ObjectiveEdgeIndicator? = null
 )
 
 /**
@@ -177,6 +227,7 @@ class CombatSimulation(
     val reduceShake: Boolean = saveData.settings.reduceScreenShake
     val reduceEffects: Boolean = saveData.settings.reduceIntenseEffects
     val aimAssistEnabled: Boolean = saveData.settings.aimAssist
+    @Volatile var autoFireEnabled: Boolean = saveData.settings.autoFireEnabled
     val maxParticles: Int = saveData.settings.graphicsQuality.maxParticles
     val language: GameLanguage = saveData.settings.language
 
@@ -198,7 +249,22 @@ class CombatSimulation(
     val enemies: MutableList<EnemyUnit> = mutableListOf()
     val tracers: MutableList<BulletTracer> = mutableListOf()
     val particles: MutableList<ImpactParticle> = mutableListOf()
+    val activeGrenades: MutableList<ActiveGrenade> = mutableListOf()
+    val explosionFlashes: MutableList<ExplosionFlash> = mutableListOf()
+    val killFeed: MutableList<KillFeedEntry> = mutableListOf()
     val pendingAudio: MutableList<SimAudioEvent> = mutableListOf()
+
+    var hasTargetLock: Boolean = false
+    var roverWheelSpinDeg: Float = 0f
+    private var roverEngineAccum: Float = 0f
+    var flashLightPos: Vec3 = Vec3()
+    var flashLightRgb: FloatArray = floatArrayOf(0f, 0f, 0f)
+
+    // Mission 1 Interactive Onboarding progression flags
+    private var tutMoved: Boolean = false
+    private var tutFired: Boolean = false
+    private var tutCovered: Boolean = false
+    private var tutInteracted: Boolean = false
 
     var status: MissionRunStatus = MissionRunStatus.INTRO
     var introTimer: Float = 2.4f
@@ -453,14 +519,36 @@ class CombatSimulation(
             cameraDirector.toggleShoulder()
         }
 
+        // Handle Field Medkit usage (usable anytime player is injured)
+        if (input.medkitPressed && player.useMedkit()) {
+            pendingAudio.add(SimAudioEvent.MedkitUsed)
+            eventBus.publish(GameplayEvent.PlayerHealed(55f, player.armor))
+            showBanner(GameStrings.hudMedkitUsed(language), 2.0f)
+        }
+
+        // Compute clean center-screen crosshair target lock for HUD highlight & Smart Auto-Fire
+        hasTargetLock = checkCrosshairTargetLock()
+        val wantsFire = input.fireHeld || (autoFireEnabled && hasTargetLock)
+
         // 1. Player or Vehicle Control Step
         if (vehicle.isOccupied) {
             if (input.interactPressed) {
+                tutInteracted = true
                 exitVehicleNow()
             } else {
                 vehicle.step(dt, input, player, city)
                 vehicleInteractObj.position = vehicle.position
-                if (input.fireHeld && vehicle.tryFireTurret()) {
+                roverWheelSpinDeg = (roverWheelSpinDeg + vehicle.speed * dt * 115f) % 360f
+                if (abs(vehicle.speed) > 0.65f) {
+                    roverEngineAccum += dt
+                    if (roverEngineAccum >= 0.34f) {
+                        roverEngineAccum = 0f
+                        pendingAudio.add(SimAudioEvent.RoverEnginePulse)
+                    }
+                } else {
+                    roverEngineAccum = 0.25f
+                }
+                if (wantsFire && vehicle.tryFireTurret()) {
                     fireVehicleTurret()
                 }
             }
@@ -485,9 +573,17 @@ class CombatSimulation(
                 pendingAudio.add(SimAudioEvent.PlayerDamaged)
             }
 
+            // Handle Frag Grenade Throw
+            if (input.grenadePressed && player.consumeGrenade()) {
+                throwFragGrenade()
+            }
+
             // Handle Interactive World Objects (including boarding Tactical Rover)
             if (input.interactPressed) {
                 val outcome = interactionManager.tryInteract(player, city)
+                if (outcome.obj != null || outcome.boardedVehicle || outcome.resupplied || outcome.objectiveDeviceActivated) {
+                    tutInteracted = true
+                }
                 outcome.message?.let { showBanner(it.get(language), 2.3f) }
                 if (outcome.resupplied) pendingAudio.add(SimAudioEvent.Reload)
                 if (outcome.objectiveDeviceActivated) {
@@ -508,6 +604,7 @@ class CombatSimulation(
             for (station in city.resupplyStations) {
                 if (!station.used && player.position.distanceXZ(station.position) < 2.6f) {
                     station.used = true
+                    tutInteracted = true
                     player.resupplyAll()
                     eventBus.publish(GameplayEvent.PlayerHealed(35f, player.maxArmor))
                     pendingAudio.add(SimAudioEvent.Reload)
@@ -515,16 +612,24 @@ class CombatSimulation(
                 }
             }
 
-            // Handle Player Firing
-            if (input.fireHeld) {
+            // Handle Player Firing (manual trigger or Smart Mobile Auto-Fire)
+            if (wantsFire) {
                 val hadZeroAmmo = player.activeWeapon.ammoInMag == 0 && player.activeWeapon.ammoReserve == 0
                 if (player.tryFire(reduceShake)) {
                     firePlayerWeapon()
-                } else if (hadZeroAmmo) {
+                } else if (hadZeroAmmo && input.fireHeld) {
                     eventBus.publish(GameplayEvent.AmmoDepleted(player.activeWeaponId))
                 }
             }
         }
+
+        // Update Mission 1 onboarding progress flags
+        if (player.totalDistanceMoved >= 1.8f) tutMoved = true
+        if (missionShotsFired >= 1) tutFired = true
+        if (player.isInCover || player.isCrouching) tutCovered = true
+
+        // Step active frag grenades (parabolic arc, bounce, 1.65s fuse detonation)
+        stepGrenades(dt)
 
         cameraDirector.step(dt, player, inVehicle = vehicle.isOccupied)
 
@@ -565,13 +670,27 @@ class CombatSimulation(
             isFinalObjective = currentObjectiveIndex == mission.objectives.lastIndex
         )
 
-        // 4. Update Tracers & Impact Particles (bounded by PerformanceManager)
+        // 4. Update Tracers, Explosion Flashes, Kill Feed, Dynamic Point Light & Particles
         val tIt = tracers.iterator()
         while (tIt.hasNext()) {
             val tr = tIt.next()
             tr.life -= dt
             if (tr.life <= 0f) tIt.remove()
         }
+        val fIt = explosionFlashes.iterator()
+        while (fIt.hasNext()) {
+            val ef = fIt.next()
+            ef.life -= dt
+            if (ef.life <= 0f) fIt.remove()
+        }
+        val kIt = killFeed.iterator()
+        while (kIt.hasNext()) {
+            val kf = kIt.next()
+            kf.life -= dt
+            if (kf.life <= 0f) kIt.remove()
+        }
+        updateDynamicFlashLight(dt)
+
         val pIt = particles.iterator()
         while (pIt.hasNext()) {
             val p = pIt.next()
@@ -780,6 +899,7 @@ class CombatSimulation(
                 missionKills += 1
                 score += 110 + if (hitZone == HitZone.HEAD) 50 else 0
                 if (hitZone == HitZone.HEAD) missionHeadshots += 1
+                recordKillFeed(hitEnemy, hitZone == HitZone.HEAD, viaExplosion = false)
                 squadCoordinator.onAllyDefeated(hitEnemy, vehicle.position, enemies)
             }
         } else if (hitBarrel != null) {
@@ -810,7 +930,189 @@ class CombatSimulation(
         spawnImpactParticles(coreTop, SurfaceMaterial.METAL)
     }
 
+    private fun enemyDisplayName(archetype: EnemyArchetype): String = when (archetype) {
+        EnemyArchetype.STANDARD_INFANTRY -> if (language == GameLanguage.ARABIC) "جندي مشاة" else "Infantry"
+        EnemyArchetype.FAST_ASSAULT -> if (language == GameLanguage.ARABIC) "مقتحم سريع" else "Fast Assault"
+        EnemyArchetype.ARMORED_HEAVY -> if (language == GameLanguage.ARABIC) "مدرّع ثقيل" else "Armored Heavy"
+        EnemyArchetype.PRECISION_MARKSMAN -> if (language == GameLanguage.ARABIC) "قناص" else "Marksman"
+        EnemyArchetype.SHIELD_DEFENDER -> if (language == GameLanguage.ARABIC) "حامل درع" else "Shield Unit"
+        EnemyArchetype.CLOSE_AGGRESSOR -> if (language == GameLanguage.ARABIC) "مهاجم قريب" else "Breacher"
+        EnemyArchetype.SQUAD_COORDINATOR -> if (language == GameLanguage.ARABIC) "ضابط فصيل" else "Officer"
+        EnemyArchetype.ELITE_BOSS -> if (language == GameLanguage.ARABIC) "القائد المدرّع" else "Commander"
+    }
+
+    private fun recordKillFeed(enemy: EnemyUnit, isHeadshot: Boolean, viaExplosion: Boolean) {
+        val xp = enemy.archetype.xpValue / 2 + if (isHeadshot) 25 else 0
+        val name = enemyDisplayName(enemy.archetype)
+        val tag = when {
+            viaExplosion -> if (language == GameLanguage.ARABIC) "انفجار" else "BLAST"
+            isHeadshot -> if (language == GameLanguage.ARABIC) "إصابة رأس" else "HEADSHOT"
+            else -> if (language == GameLanguage.ARABIC) "إقصاء" else "ELIM"
+        }
+        killFeed.add(0, KillFeedEntry("$tag • $name", isHeadshot, xp, life = 3.2f))
+        if (killFeed.size > 4) killFeed.removeAt(killFeed.lastIndex)
+    }
+
+    private fun checkCrosshairTargetLock(): Boolean {
+        if (enemies.none { it.isAlive }) return false
+        val maxRange = if (vehicle.isOccupied) 70f else player.activeWeapon.stats.effectiveRange * 1.35f
+        val (origin, dir) = if (vehicle.isOccupied) {
+            val camPose = cameraDirector.computePose(player, city, reduceShake = true, inVehicle = true)
+            camPose.position to (camPose.lookTarget - camPose.position).normalized()
+        } else {
+            player.getAimOriginAndDirection(city, cameraDirector)
+        }
+        val worldHit = city.raycastWorld(origin, dir, maxRange)
+        val bestWallDist = worldHit?.first ?: maxRange
+        for (i in enemies.indices) {
+            val e = enemies[i]
+            if (!e.isAlive) continue
+            val direct = e.intersectRay(origin, dir, bestWallDist)
+            if (direct != null) return true
+            // Slight magnetic lock tolerance when aiming close to enemy torso with clean LOS
+            val center = Vec3(e.position.x, e.position.y + e.height * 0.62f, e.position.z)
+            val toE = center - origin
+            val dist = toE.length()
+            if (dist in 1.2f..bestWallDist) {
+                val dot = dir.dot(toE * (1f / dist))
+                val threshold = if (player.isAiming) 0.994f else 0.989f
+                if (dot >= threshold && city.hasLineOfSight(origin, center)) return true
+            }
+        }
+        return false
+    }
+
+    private fun throwFragGrenade() {
+        val (_, aimDir) = player.getAimOriginAndDirection(city, cameraDirector)
+        val startPos = Vec3(player.position.x, player.position.y + player.eyeHeight - 0.12f, player.position.z) + aimDir * 0.7f
+        val throwVel = Vec3(aimDir.x * 14.5f, (aimDir.y * 10.0f + 4.8f).coerceIn(2.5f, 9.5f), aimDir.z * 14.5f)
+        activeGrenades.add(ActiveGrenade(position = startPos, velocity = throwVel, fuse = 1.65f))
+        pendingAudio.add(SimAudioEvent.GrenadeThrown)
+        showBanner(GameStrings.hudGrenadeThrown(language), 1.6f)
+    }
+
+    private fun stepGrenades(dt: Float) {
+        if (activeGrenades.isEmpty()) return
+        val gIt = activeGrenades.iterator()
+        while (gIt.hasNext()) {
+            val g = gIt.next()
+            g.fuse -= dt
+            val prevPos = g.position
+            g.velocity = Vec3(g.velocity.x * (1f - 0.35f * dt), g.velocity.y - 15.0f * dt, g.velocity.z * (1f - 0.35f * dt))
+            var nextPos = g.position + g.velocity * dt
+            if (nextPos.y < 0.15f) {
+                nextPos = nextPos.copy(y = 0.15f)
+                g.velocity = Vec3(g.velocity.x * 0.56f, -g.velocity.y * 0.36f, g.velocity.z * 0.56f)
+            }
+            val hitWall = city.colliders.any { it.isActive && it.bounds.intersectsXZ(nextPos.x, nextPos.z, 0.18f) && nextPos.y < it.bounds.maxY }
+            if (hitWall) {
+                nextPos = prevPos
+                g.velocity = Vec3(-g.velocity.x * 0.42f, g.velocity.y * 0.6f, -g.velocity.z * 0.42f)
+            }
+            g.position = Vec3(
+                nextPos.x.coerceIn(city.minBoundX + 0.5f, city.maxBoundX - 0.5f),
+                nextPos.y,
+                nextPos.z.coerceIn(city.minBoundZ + 0.5f, city.maxBoundZ - 0.5f)
+            )
+            if (g.fuse <= 0f) {
+                gIt.remove()
+                detonateGrenade(g.position)
+            }
+        }
+    }
+
+    private fun detonateGrenade(center: Vec3) {
+        val aliveBefore = enemies.filter { it.isAlive }
+        val killedCount = damageSystem.applyRadialHazardBlast(
+            center = center,
+            radius = 8.0f,
+            maxDamage = 155f,
+            player = player,
+            enemies = enemies,
+            reduceShake = reduceShake
+        )
+        missionKills += killedCount
+        score += killedCount * 135
+        for (e in aliveBefore) {
+            if (!e.isAlive) {
+                recordKillFeed(e, isHeadshot = false, viaExplosion = true)
+                squadCoordinator.onAllyDefeated(e, center, enemies)
+            }
+        }
+        if (killedCount > 0) {
+            hitMarkerTimer = 0.28f
+            hitMarkerHeadshot = false
+            pendingAudio.add(SimAudioEvent.HitConfirm(false))
+        }
+        explosionFlashes.add(ExplosionFlash(center + Vec3(0f, 0.8f, 0f), life = 0.38f, maxLife = 0.38f, radius = 2.9f))
+        pendingAudio.add(SimAudioEvent.Explosion)
+
+        val cap = performanceManager.effectiveMaxParticles
+        repeat(if (reduceEffects) 5 else 16) {
+            if (particles.size < cap) {
+                val vel = Vec3(
+                    (rng.nextFloat() - 0.5f) * 10.5f,
+                    2.8f + rng.nextFloat() * 6.0f,
+                    (rng.nextFloat() - 0.5f) * 10.5f
+                )
+                val col = if (it % 2 == 0) floatArrayOf(1.0f, 0.72f, 0.22f) else floatArrayOf(0.42f, 0.42f, 0.45f)
+                particles.add(ImpactParticle(center + Vec3(0f, 0.6f, 0f), vel, col, 0.17f, 0.68f, 0.68f))
+            }
+        }
+        for (e in enemies) {
+            if (e.isAlive && e.position.distanceXZ(center) <= 38f) {
+                e.alertTo(center, highPriority = true)
+            }
+        }
+        // Chain-detonate nearby explosive fuel barrels
+        val chainBarrels = interactionManager.objects.filter {
+            it.kind == InteractiveKind.DESTRUCTIBLE_BARREL && !it.isDestroyed && it.position.distanceXZ(center) <= 7.5f
+        }
+        for (b in chainBarrels) {
+            if (interactionManager.damageBarrel(b, 200f)) {
+                triggerBarrelDetonation(b.position)
+            }
+        }
+    }
+
+    private fun updateDynamicFlashLight(dt: Float) {
+        val activeBlast = explosionFlashes.firstOrNull()
+        when {
+            activeBlast != null -> {
+                val frac = (activeBlast.life / activeBlast.maxLife).coerceIn(0f, 1f)
+                flashLightPos = activeBlast.position
+                flashLightRgb = floatArrayOf(1.9f * frac, 1.15f * frac, 0.36f * frac)
+            }
+            vehicle.isOccupied && vehicle.muzzleFlashTimer > 0f -> {
+                flashLightPos = vehicle.turretMuzzleWorldPos()
+                flashLightRgb = floatArrayOf(1.35f, 0.95f, 0.42f)
+            }
+            !vehicle.isOccupied && player.muzzleFlashTimer > 0f -> {
+                val shoulderSign = cameraDirector.shoulder.sign
+                flashLightPos = Vec3(
+                    player.position.x + cos(player.yaw) * 0.34f * shoulderSign - sin(player.yaw) * 0.65f,
+                    player.position.y + player.eyeHeight - 0.14f,
+                    player.position.z - sin(player.yaw) * 0.34f * shoulderSign - cos(player.yaw) * 0.65f
+                )
+                flashLightRgb = if (player.activeWeaponId == WeaponId.RAIL_X1_HEAVY) {
+                    floatArrayOf(0.45f, 1.25f, 1.65f)
+                } else {
+                    floatArrayOf(1.25f, 0.88f, 0.38f)
+                }
+            }
+            else -> {
+                val decay = (1f - dt * 18f).coerceAtLeast(0f)
+                flashLightRgb = floatArrayOf(
+                    flashLightRgb[0] * decay,
+                    flashLightRgb[1] * decay,
+                    flashLightRgb[2] * decay
+                )
+            }
+        }
+    }
+
     private fun triggerBarrelDetonation(center: Vec3) {
+        val aliveBefore = enemies.filter { it.isAlive }
         val killedCount = damageSystem.applyRadialHazardBlast(
             center = center,
             radius = 7.5f,
@@ -821,7 +1123,14 @@ class CombatSimulation(
         )
         missionKills += killedCount
         score += killedCount * 120
-        pendingAudio.add(SimAudioEvent.Impact(SurfaceMaterial.METAL))
+        for (e in aliveBefore) {
+            if (!e.isAlive) {
+                recordKillFeed(e, isHeadshot = false, viaExplosion = true)
+                squadCoordinator.onAllyDefeated(e, center, enemies)
+            }
+        }
+        explosionFlashes.add(ExplosionFlash(center + Vec3(0f, 0.8f, 0f), life = 0.36f, maxLife = 0.36f, radius = 2.6f))
+        pendingAudio.add(SimAudioEvent.Explosion)
         val cap = performanceManager.effectiveMaxParticles
         repeat(if (reduceEffects) 4 else 14) {
             if (particles.size < cap) {
@@ -844,9 +1153,10 @@ class CombatSimulation(
     private fun firePlayerWeapon() {
         val stats: EffectiveWeaponStats = player.activeWeapon.stats
         val weaponId = stats.weapon.id
-        pendingAudio.add(SimAudioEvent.WeaponFired(weaponId))
+        val isSuppressed = stats.hasStabilizer
+        pendingAudio.add(SimAudioEvent.WeaponFired(weaponId, suppressed = isSuppressed))
 
-        val soundRadius = if (stats.hasLongBarrel) 30f else 36f
+        val soundRadius = if (isSuppressed) 18f else if (stats.hasLongBarrel) 30f else 36f
         eventBus.publish(GameplayEvent.WeaponFired(weaponId, player.position, soundRadius))
 
         for (e in enemies) {
@@ -951,6 +1261,7 @@ class CombatSimulation(
                     score += 100 + if (hitZone == HitZone.HEAD) 50 else 0
                     if (hitZone == HitZone.HEAD) missionHeadshots += 1
                     missionWeaponKills[weaponId] = (missionWeaponKills[weaponId] ?: 0) + 1
+                    recordKillFeed(hitEnemy, hitZone == HitZone.HEAD, viaExplosion = false)
                     squadCoordinator.onAllyDefeated(hitEnemy, player.position, enemies)
                 }
             } else if (hitBarrel != null) {
@@ -1183,6 +1494,17 @@ class CombatSimulation(
             interactionManager.buildPromptText(promptTarget, language)
         }
 
+        val tutorialHint = if (mode == GameMode.CAMPAIGN && mission.number == 1 && status == MissionRunStatus.ACTIVE) {
+            when {
+                !tutMoved -> GameStrings.tutorialMove(language)
+                !tutFired -> GameStrings.tutorialFire(language)
+                !tutCovered && (player.canEnterCover || enemies.any { it.isAlive && it.position.distanceXZ(player.position) < 28f }) ->
+                    GameStrings.tutorialCover(language)
+                !tutInteracted && promptText != null -> GameStrings.tutorialInteract(language)
+                else -> null
+            }
+        } else null
+
         return HudSnapshot(
             status = status,
             missionNumber = mission.number,
@@ -1240,7 +1562,13 @@ class CombatSimulation(
             challengeTimeRemaining = challengeTimeRemaining,
             inVehicle = vehicle.isOccupied,
             vehicleHealth = vehicle.health,
-            vehicleMaxHealth = vehicle.maxHealth
+            vehicleMaxHealth = vehicle.maxHealth,
+            grenades = player.grenades,
+            medkits = player.medkits,
+            hasTargetLock = hasTargetLock,
+            autoFireEnabled = autoFireEnabled,
+            killFeed = killFeed.toList(),
+            tutorialHint = tutorialHint
         )
     }
 }

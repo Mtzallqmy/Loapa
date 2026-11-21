@@ -46,7 +46,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        viewModel.pauseGame()
+        viewModel.onAppPaused()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.onAppResumed()
     }
 
     private fun configureImmersiveLandscape() {

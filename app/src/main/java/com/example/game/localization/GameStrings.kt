@@ -135,6 +135,11 @@ object GameStrings {
     fun hudSprint(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "ركض" else "SPRINT"
     fun hudCover(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "ساتر" else "COVER"
     fun hudVault(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "قفز حاجز" else "VAULT"
+    fun hudGrenade(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "قنبلة" else "FRAG"
+    fun hudMedkit(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "إسعاف" else "MED"
+    fun hudMedkitUsed(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تم استخدام حقيبة الإسعاف (+55 صحة)" else "MEDKIT APPLIED (+55 HP)"
+    fun hudGrenadeThrown(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تم رمي قنبلة يدوية!" else "FRAG OUT!"
+    fun hudAutoFireSetting(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "الإطلاق التلقائي الذكي عند التصويب" else "Smart Auto-Fire on Target Lock"
     fun hudInteract(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تفاعل" else "USE"
     fun hudExitVehicle(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "نزول" else "EXIT"
     fun hudVehicleHull(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "هيكل المدرّعة" else "ROVER HULL"
@@ -156,6 +161,10 @@ object GameStrings {
     fun hudVehicleBoarded(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تم ركوب المدرّعة التكتيكية" else "TACTICAL ROVER BOARDED"
     fun hudVehicleDisabled(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تضررت المدرّعة — إخلاء فوري!" else "ROVER DISABLED — EJECTING!"
     fun hudCoreUnderAttack(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تحذير: برج القيادة يتعرض للهجوم!" else "WARNING: COMMAND CORE UNDER ATTACK!"
+    fun tutorialMove(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تدريب: استخدم عصا الحركة اليسرى للتقدّم" else "TRAINING: Use the left thumbstick to advance"
+    fun tutorialFire(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تدريب: اسحب الشاشة للتصويب واضغط «إطلاق» أو «تصويب»" else "TRAINING: Drag screen to aim, hold FIRE or AIM"
+    fun tutorialCover(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تدريب: أنت قرب ساتر — اضغط «ساتر» للاحتماء من النيران" else "TRAINING: Near cover — tap COVER to take shelter"
+    fun tutorialInteract(lang: GameLanguage) = if (lang == GameLanguage.ARABIC) "تدريب: اضغط زر التفاعل السفلي لركوب المدرّعة أو فتح الإمدادات" else "TRAINING: Tap the bottom prompt to board Rover or resupply"
 
     fun combatPhaseLabel(phase: CombatPhase, lang: GameLanguage): String = when (phase) {
         CombatPhase.QUIET -> if (lang == GameLanguage.ARABIC) "هادئ" else "QUIET"

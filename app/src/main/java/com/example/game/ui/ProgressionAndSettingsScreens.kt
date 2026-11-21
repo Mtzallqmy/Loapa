@@ -301,6 +301,9 @@ fun SettingsScreen(
                     ToggleRow(if (lang == GameLanguage.ARABIC) "مساعدة التصويب للجوال" else "Mobile Aim Assist", settings.aimAssist) { v ->
                         onUpdateSettings { it.copy(aimAssist = v) }
                     }
+                    ToggleRow(GameStrings.hudAutoFireSetting(lang), settings.autoFireEnabled) { v ->
+                        onUpdateSettings { it.copy(autoFireEnabled = v) }
+                    }
                     ToggleRow(if (lang == GameLanguage.ARABIC) "عكس محور الكاميرا العمودي" else "Invert Camera Y Axis", settings.invertY) { v ->
                         onUpdateSettings { it.copy(invertY = v) }
                     }

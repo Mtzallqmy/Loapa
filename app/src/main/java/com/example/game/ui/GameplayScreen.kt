@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -54,10 +55,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -75,8 +81,12 @@ import com.example.game.data.CrosshairStyle
 import com.example.game.data.GameLanguage
 import com.example.game.data.GameMode
 import com.example.game.data.WeaponCatalog
+import com.example.game.data.WeaponId
 import com.example.game.engine.HudSnapshot
+import com.example.game.engine.KillFeedEntry
 import com.example.game.engine.MissionRunStatus
+import com.example.game.engine.ObjectiveEdgeIndicator
+import com.example.game.engine.ProjectedEnemyBar
 import com.example.game.localization.GameStrings
 import com.example.game.render.CombatGLRenderer
 import com.example.game.save.GameSettings
@@ -168,13 +178,43 @@ fun GameplayScreen(
                 }
         )
 
-        // 3. Crosshair, Hit Marker & Directional Damage Arc
+        // 3. 3D-Projected World Overlays (Floating Enemy Health Bars & Directional Objective Indicator)
+        val sniperScopeActive = hud != null &&
+            hud.status == MissionRunStatus.ACTIVE &&
+            hud.isAiming &&
+            !hud.inVehicle &&
+            (hud.weaponId == WeaponId.SR308_PRECISION || hud.weaponId == WeaponId.DMR14_MARKSMAN)
+
         if (hud != null && hud.status == MissionRunStatus.ACTIVE) {
-            CenterTacticalReticle(
-                hud = hud,
-                style = settings.crosshairStyle,
-                modifier = Modifier.align(Alignment.Center)
+            ProjectedBattlefieldOverlay(
+                enemyBars = hud.enemyBars,
+                objectiveIndicator = hud.objectiveIndicator
             )
+            // Low-Health Crimson Edge Vignette
+            if (hud.health < 35f) {
+                val severity = ((35f - hud.health) / 35f).coerceIn(0.15f, 1f)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color.Transparent, Color.Transparent, SignalCrimson.copy(alpha = 0.48f * severity)),
+                            center = Offset(size.width / 2f, size.height / 2f),
+                            radius = size.maxDimension * 0.62f
+                        )
+                    )
+                }
+            }
+            if (sniperScopeActive) {
+                SniperScopeOverlay(
+                    weaponId = hud.weaponId,
+                    hasTargetLock = hud.hasTargetLock
+                )
+            } else {
+                CenterTacticalReticle(
+                    hud = hud,
+                    style = settings.crosshairStyle,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
         }
 
         // 4. Safe-Area Mobile Tactical HUD
@@ -193,7 +233,17 @@ fun GameplayScreen(
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
 
-                // Banner announcement (Checkpoint / Reinforcements / Ammo)
+                // Live Kill Feed + +XP Stack (below right weapon readout)
+                if (hud.killFeed.isNotEmpty()) {
+                    KillFeedOverlay(
+                        entries = hud.killFeed,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 72.dp, end = 4.dp)
+                    )
+                }
+
+                // Banner announcement (Checkpoint / Reinforcements / Ammo / Equipment)
                 hud.bannerMessage?.let { msg ->
                     Surface(
                         color = HudOverlayBg,
@@ -235,6 +285,27 @@ fun GameplayScreen(
                             fontWeight = FontWeight.Bold,
                             color = if (hud.inVehicle) DesertGold else TacticalEmerald,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                        )
+                    }
+                }
+
+                // Mission 1 Interactive Onboarding Contextual Hint Pill
+                hud.tutorialHint?.let { hint ->
+                    Surface(
+                        color = Color(0xE00B1822),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.2.dp, ArmorCyan),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = if (bottomActionLabel != null) 104.dp else 56.dp)
+                            .testTag("hud_tutorial_hint")
+                    ) {
+                        Text(
+                            text = hint,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ArmorCyan,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                         )
                     }
                 }
@@ -572,10 +643,14 @@ private fun CenterTacticalReticle(
             )
         }
 
-        // Crosshair
+        // Crosshair (bright SignalCrimson highlight on clean enemy target lock)
         val gap = if (hud.isAiming) 6f else if (style == CrosshairStyle.DYNAMIC) 14f else 10f
         val arm = if (hud.isAiming) 9f else 13f
-        val col = if (hud.isAiming) DesertGold else Color.White.copy(alpha = 0.88f)
+        val col = when {
+            hud.hasTargetLock -> SignalCrimson
+            hud.isAiming -> DesertGold
+            else -> Color.White.copy(alpha = 0.88f)
+        }
         if (style == CrosshairStyle.TACTICAL_DOT) {
             drawCircle(col, 3.2f, Offset(cx, cy))
             drawCircle(col.copy(alpha = 0.45f), gap + 4f, Offset(cx, cy), style = Stroke(1.5f))
@@ -586,6 +661,10 @@ private fun CenterTacticalReticle(
             drawLine(col, Offset(cx, cy + gap), Offset(cx, cy + gap + arm), 2.2f)
             drawCircle(col, 2f, Offset(cx, cy))
         }
+        if (hud.hasTargetLock) {
+            val r = gap + arm + 5f
+            drawCircle(SignalCrimson.copy(alpha = 0.55f), r, Offset(cx, cy), style = Stroke(1.4f))
+        }
 
         // Hit Confirmation X (Gold on Headshot, White on Body)
         if (hud.hitMarkerAlpha > 0.02f) {
@@ -595,6 +674,177 @@ private fun CenterTacticalReticle(
             drawLine(hmCol, Offset(cx + d1, cy - d1), Offset(cx + d2, cy - d2), 3f)
             drawLine(hmCol, Offset(cx - d2, cy + d2), Offset(cx - d1, cy + d1), 3f)
             drawLine(hmCol, Offset(cx + d1, cy + d1), Offset(cx + d2, cy + d2), 3f)
+        }
+    }
+}
+
+@Composable
+private fun ProjectedBattlefieldOverlay(
+    enemyBars: List<ProjectedEnemyBar>,
+    objectiveIndicator: ObjectiveEdgeIndicator?
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        // 1. Floating 3D-projected enemy health bars on a single fast Canvas
+        if (enemyBars.isNotEmpty()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                for (bar in enemyBars) {
+                    val bw = if (bar.isBoss) 72.dp.toPx() else 44.dp.toPx()
+                    val bh = if (bar.isBoss) 6.dp.toPx() else 4.5.dp.toPx()
+                    val cx = bar.screenX * size.width
+                    val cy = bar.screenY * size.height
+                    val left = cx - bw * 0.5f
+                    val top = cy - bh * 0.5f
+                    drawRect(Color(0xCC0A0E12), Offset(left - 1.5f, top - 1.5f), Size(bw + 3f, bh + 3f))
+                    val fillCol = when {
+                        bar.isBoss -> DesertGold
+                        bar.isSniper -> ArmorCyan
+                        else -> SignalCrimson
+                    }
+                    drawRect(fillCol, Offset(left, top), Size(bw * bar.healthFrac.coerceIn(0f, 1f), bh))
+                }
+            }
+        }
+
+        // 2. Directional Objective Arrow + Distance Badge
+        objectiveIndicator?.let { ind ->
+            val pxX = with(density) { (maxWidth.toPx() * ind.screenX).roundToInt() }
+            val pxY = with(density) { (maxHeight.toPx() * ind.screenY).roundToInt() }
+            Column(
+                modifier = Modifier
+                    .offset { IntOffset(pxX - 34, pxY - 24) },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Canvas(modifier = Modifier.size(20.dp)) {
+                    rotate(ind.angleDeg) {
+                        val path = Path().apply {
+                            moveTo(size.width * 0.5f, 2f)
+                            lineTo(size.width - 2f, size.height - 3f)
+                            lineTo(size.width * 0.5f, size.height * 0.68f)
+                            lineTo(2f, size.height - 3f)
+                            close()
+                        }
+                        drawPath(path, DesertGold)
+                    }
+                }
+                Surface(
+                    color = Color(0xCC0A0E12),
+                    shape = RoundedCornerShape(4.dp),
+                    border = BorderStroke(1.dp, DesertGold.copy(alpha = 0.75f))
+                ) {
+                    Text(
+                        text = "${ind.distanceMeters}m",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = DesertGold,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SniperScopeOverlay(
+    weaponId: WeaponId,
+    hasTargetLock: Boolean
+) {
+    Box(modifier = Modifier.fillMaxSize().testTag("sniper_scope_overlay")) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val radius = (size.minDimension * 0.43f).coerceAtLeast(120f)
+
+            // Even-Odd blackout mask outside circular sniper optic
+            val maskPath = Path().apply {
+                fillType = PathFillType.EvenOdd
+                addRect(Rect(0f, 0f, size.width, size.height))
+                addOval(Rect(cx - radius, cy - radius, cx + radius, cy + radius))
+            }
+            drawPath(maskPath, Color(0xF5040608))
+
+            // Outer optic bezel ring
+            drawCircle(Color(0xFF1A222A), radius, Offset(cx, cy), style = Stroke(width = 8f))
+            drawCircle(DesertGold.copy(alpha = 0.55f), radius - 4f, Offset(cx, cy), style = Stroke(width = 1.5f))
+
+            // Fine crosshairs & mil-dot ticks
+            val reticleCol = if (hasTargetLock) SignalCrimson else Color(0xFF14181C)
+            drawLine(reticleCol, Offset(cx - radius, cy), Offset(cx + radius, cy), 1.8f)
+            drawLine(reticleCol, Offset(cx, cy - radius), Offset(cx, cy + radius), 1.8f)
+            // Thicker outer stadia bars
+            drawLine(Color.Black, Offset(cx - radius, cy), Offset(cx - radius * 0.42f, cy), 5f)
+            drawLine(Color.Black, Offset(cx + radius * 0.42f, cy), Offset(cx + radius, cy), 5f)
+            drawLine(Color.Black, Offset(cx, cy + radius * 0.42f), Offset(cx, cy + radius), 5f)
+
+            // Mil-dot range ticks
+            val step = radius * 0.11f
+            for (k in 1..3) {
+                val tick = if (k == 2) 7f else 4.5f
+                drawLine(reticleCol, Offset(cx - k * step, cy - tick), Offset(cx - k * step, cy + tick), 1.6f)
+                drawLine(reticleCol, Offset(cx + k * step, cy - tick), Offset(cx + k * step, cy + tick), 1.6f)
+                drawLine(reticleCol, Offset(cx - tick, cy + k * step), Offset(cx + tick, cy + k * step), 1.6f)
+                drawLine(reticleCol, Offset(cx - tick, cy - k * step), Offset(cx + tick, cy - k * step), 1.6f)
+            }
+            // Illuminated center dot
+            drawCircle(if (hasTargetLock) SignalCrimson else TacticalEmerald, 3.2f, Offset(cx, cy))
+        }
+
+        // Optic magnification badge
+        Surface(
+            color = Color(0xCC080C10),
+            shape = RoundedCornerShape(4.dp),
+            border = BorderStroke(1.dp, DesertGold.copy(alpha = 0.65f)),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .offset(x = 128.dp, y = (-104).dp)
+        ) {
+            Text(
+                text = if (weaponId == WeaponId.SR308_PRECISION) "6.0x OPTIC" else "4.0x DMR",
+                style = MaterialTheme.typography.labelSmall,
+                color = DesertGold,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun KillFeedOverlay(
+    entries: List<KillFeedEntry>,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        entries.take(4).forEach { entry ->
+            val accent = if (entry.isHeadshot) DesertGold else TacticalEmerald
+            Surface(
+                color = Color(0xCC0A0E12),
+                shape = RoundedCornerShape(5.dp),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.75f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = entry.text,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextPrimary,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = "+${entry.xpBonus} XP",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = accent
+                    )
+                }
+            }
         }
     }
 }
@@ -749,6 +999,28 @@ private fun CombatActionButtons(
             }
         }
 
+        // Tactical Equipment Row: Frag Grenade (on foot) + Field Medkit (always accessible)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TacticalTapButton(
+                label = "${GameStrings.hudMedkit(language)} ${hud.medkits}",
+                size = btnSize.coerceAtLeast(48.dp),
+                active = hud.health < 55f && hud.medkits > 0,
+                accent = if (hud.medkits > 0) TacticalEmerald else TextSecondary,
+                testTag = "hud_medkit_btn",
+                onTap = { inputBridge.triggerMedkit() }
+            )
+            if (!hud.inVehicle) {
+                TacticalTapButton(
+                    label = "${GameStrings.hudGrenade(language)} ${hud.grenades}",
+                    size = btnSize.coerceAtLeast(48.dp),
+                    active = false,
+                    accent = if (hud.grenades > 0) DesertGold else TextSecondary,
+                    testTag = "hud_grenade_btn",
+                    onTap = { inputBridge.triggerGrenade() }
+                )
+            }
+        }
+
         // Primary row: Reload (on foot), Aim (ADS / Turret Zoom), FIRE (Weapon / Turret)
         Row(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -776,7 +1048,7 @@ private fun CombatActionButtons(
             TacticalHoldButton(
                 label = GameStrings.hudFire(language),
                 size = fireSize,
-                active = inputBridge.fireHeld,
+                active = inputBridge.fireHeld || (hud.autoFireEnabled && hud.hasTargetLock),
                 accent = SignalCrimson,
                 offsetDp = IntOffset((controls.fireOffset.dx * 90).roundToInt(), (controls.fireOffset.dy * 90).roundToInt()),
                 testTag = "hud_fire_btn",

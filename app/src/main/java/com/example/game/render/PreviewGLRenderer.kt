@@ -48,6 +48,8 @@ class PreviewGLRenderer(
     private var uFogColor = 0
     private var uFogDensity = 0
     private var uNightFactor = 0
+    private var uFlashPos = 0
+    private var uFlashColor = 0
     private var uSkyZenith = 0
     private var uSkyHorizon = 0
 
@@ -81,6 +83,8 @@ class PreviewGLRenderer(
             uFogColor = GLES20.glGetUniformLocation(worldProgram, "uFogColor")
             uFogDensity = GLES20.glGetUniformLocation(worldProgram, "uFogDensity")
             uNightFactor = GLES20.glGetUniformLocation(worldProgram, "uNightFactor")
+            uFlashPos = GLES20.glGetUniformLocation(worldProgram, "uFlashPos")
+            uFlashColor = GLES20.glGetUniformLocation(worldProgram, "uFlashColor")
         }
         if (skyProgram != 0) {
             uSkyZenith = GLES20.glGetUniformLocation(skyProgram, "uZenith")
@@ -137,6 +141,8 @@ class PreviewGLRenderer(
         GLES20.glUniform3f(uFogColor, 0.10f, 0.14f, 0.18f)
         GLES20.glUniform1f(uFogDensity, 0.02f)
         GLES20.glUniform1f(uNightFactor, 0f)
+        if (uFlashPos >= 0) GLES20.glUniform3f(uFlashPos, 0f, 0f, 0f)
+        if (uFlashColor >= 0) GLES20.glUniform3f(uFlashColor, 0f, 0f, 0f)
 
         // Metallic circular tactical turntable pedestal
         m.drawPart(

@@ -382,15 +382,116 @@ class EndToEndAndStressTest {
     @Test
     fun audioEngineHandlesHighRateConcurrentBurstsWithoutBlockingOrCrashing() {
         val engine = TacticalAudioEngine()
+        engine.setCombatMusicMode(true)
         val startMs = System.currentTimeMillis()
         repeat(60) { i ->
-            engine.handleEvent(SimAudioEvent.WeaponFired(WeaponId.VX74_ASSAULT))
+            engine.handleEvent(SimAudioEvent.WeaponFired(WeaponId.VX74_ASSAULT, suppressed = i % 2 == 0))
             engine.handleEvent(SimAudioEvent.HitConfirm(headshot = i % 5 == 0))
             if (i % 10 == 0) engine.handleEvent(SimAudioEvent.VehicleTurretFired)
+            if (i % 15 == 0) engine.handleEvent(SimAudioEvent.Explosion)
+            if (i % 20 == 0) engine.handleEvent(SimAudioEvent.GrenadeThrown)
+            if (i % 25 == 0) engine.handleEvent(SimAudioEvent.MedkitUsed)
             if (i % 12 == 0) engine.playUiClick()
         }
+        engine.setPaused(true)
+        engine.setPaused(false)
+        engine.setCombatMusicMode(false)
         val elapsedMs = System.currentTimeMillis() - startMs
         engine.release()
         assertTrue("Audio dispatch must remain non-blocking under burst load (took ${elapsedMs}ms)", elapsedMs < 1500L)
+    }
+
+    @Test
+    fun fragGrenadeAndMedkitWorkEndToEnd() {
+        val sim = CombatSimulation(MissionCatalog.missionByNumber(1), PlayerSaveData())
+        sim.skipIntro()
+
+        // Position a fresh enemy directly in front of player in clear space
+        val targetEnemy = sim.enemies.first()
+        sim.player.position = Vec3(0f, 0f, 12f)
+        sim.player.yaw = 0f
+        sim.player.pitch = 0f
+        targetEnemy.position = Vec3(0f, 0f, 5f)
+        targetEnemy.health = 70f
+        targetEnemy.armor = 0f
+
+        val startGrenades = sim.player.grenades
+        sim.step(0.03f, PlayerInputState(grenadePressed = true))
+        assertEquals("Throwing grenade must consume 1 grenade", startGrenades - 1, sim.player.grenades)
+        assertEquals("Active grenade must be spawned in flight", 1, sim.activeGrenades.size)
+
+        // Place grenade right next to enemy and let fuse detonate
+        sim.activeGrenades[0].position = Vec3(0f, 0.25f, 5.2f)
+        sim.activeGrenades[0].velocity = Vec3(0f, 0f, 0f)
+        sim.activeGrenades[0].fuse = 0.04f
+        sim.step(0.05f, PlayerInputState())
+
+        val events = sim.drainAudioEvents()
+        assertTrue("Grenade detonation must emit Explosion audio event", events.any { it is SimAudioEvent.Explosion })
+        assertTrue("Grenade explosion must create 3D fireball flash", sim.explosionFlashes.isNotEmpty())
+        assertFalse("Enemy caught in grenade blast must be eliminated", targetEnemy.isAlive)
+        assertTrue("Elimination must populate Kill Feed", sim.killFeed.isNotEmpty())
+
+        // Test Field Medkit healing
+        sim.player.health = 32f
+        sim.player.armor = 20f
+        val startMedkits = sim.player.medkits
+        sim.step(0.03f, PlayerInputState(medkitPressed = true))
+        val medEvents = sim.drainAudioEvents()
+        assertEquals("Using medkit must consume 1 medkit", startMedkits - 1, sim.player.medkits)
+        assertTrue("Medkit must heal player health significantly", sim.player.health >= 85f)
+        assertTrue("Medkit must restore armor", sim.player.armor >= 45f)
+        assertTrue("Medkit must emit MedkitUsed audio event", medEvents.any { it is SimAudioEvent.MedkitUsed })
+    }
+
+    @Test
+    fun smartAutoFireAndSettingsPersistenceWork() {
+        val dir = tempSaveDir()
+        val mgr = SaveManager(dir)
+        val saved = PlayerSaveData(settings = GameSettings(autoFireEnabled = true))
+        assertTrue(mgr.save(saved))
+        val reloaded = SaveManager(dir).load()
+        assertTrue("autoFireEnabled must persist in SaveManager", reloaded.settings.autoFireEnabled)
+
+        val sim = CombatSimulation(MissionCatalog.missionByNumber(1), reloaded)
+        sim.skipIntro()
+        sim.player.position = Vec3(0f, 0f, 12f)
+        sim.player.yaw = 0f
+        sim.player.pitch = 0f
+
+        // Align first enemy squarely in front of player's line of sight (camera looks down -Z when yaw=0)
+        val enemy = sim.enemies.first()
+        enemy.position = Vec3(0f, 0f, 4f)
+        enemy.health = 100f
+
+        // Step WITHOUT fireHeld — Smart Auto-Fire must detect target lock and fire automatically
+        repeat(6) {
+            sim.step(0.03f, PlayerInputState(fireHeld = false))
+        }
+        assertTrue("Crosshair aligned on enemy must register target lock", sim.hasTargetLock)
+        assertTrue("Smart Auto-Fire must fire shots automatically when locked onto enemy", sim.missionShotsFired > 0)
+    }
+
+    @Test
+    fun mission1InteractiveOnboardingProgressesCleanly() {
+        val sim = CombatSimulation(MissionCatalog.missionByNumber(1), PlayerSaveData(), mode = GameMode.CAMPAIGN)
+        sim.skipIntro()
+
+        val initialHint = sim.buildHudSnapshot().tutorialHint
+        assertNotNull("Mission 1 must display initial movement onboarding hint", initialHint)
+
+        // Move player > 2m so movement hint completes and advances to fire hint
+        repeat(25) {
+            sim.step(0.04f, PlayerInputState(moveY = 1f))
+        }
+        val fireHint = sim.buildHudSnapshot().tutorialHint
+        assertNotNull("After moving, Mission 1 must advance to firing hint", fireHint)
+        assertFalse("Hint must advance from movement hint to firing hint", initialHint == fireHint)
+
+        // Fire weapon so fire hint completes
+        sim.step(0.04f, PlayerInputState(fireHeld = true))
+        assertTrue(sim.missionShotsFired >= 1)
+        val afterFireHint = sim.buildHudSnapshot().tutorialHint
+        assertFalse("Hint must dismiss firing prompt once player fires", fireHint == afterFireHint)
     }
 }

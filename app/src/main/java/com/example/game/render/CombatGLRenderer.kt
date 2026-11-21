@@ -5,6 +5,7 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import com.example.game.data.CharacterAppearance
 import com.example.game.data.EnemyAiState
+import com.example.game.data.EnemyArchetype
 import com.example.game.data.GameMode
 import com.example.game.data.GraphicsQuality
 import com.example.game.data.InteractiveKind
@@ -13,11 +14,15 @@ import com.example.game.data.SurfaceMaterial
 import com.example.game.engine.BlockShape
 import com.example.game.engine.CombatSimulation
 import com.example.game.engine.HudSnapshot
+import com.example.game.engine.ObjectiveEdgeIndicator
 import com.example.game.engine.PlayerInputState
+import com.example.game.engine.ProjectedEnemyBar
 import com.example.game.engine.SimAudioEvent
+import com.example.game.engine.Vec3
 import java.util.concurrent.atomic.AtomicReference
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -56,6 +61,8 @@ class CombatGLRenderer(
     private var uFogColor = 0
     private var uFogDensity = 0
     private var uNightFactor = 0
+    private var uFlashPos = 0
+    private var uFlashColor = 0
 
     private var uSkyZenith = 0
     private var uSkyHorizon = 0
@@ -63,6 +70,8 @@ class CombatGLRenderer(
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
     private val vpMatrix = FloatArray(16)
+    private val tmpWorldVec = FloatArray(4)
+    private val tmpClipVec = FloatArray(4)
 
     private var viewportAspect = 16f / 9f
     private var currentFov = 64f
@@ -92,6 +101,8 @@ class CombatGLRenderer(
             uFogColor = GLES20.glGetUniformLocation(worldProgram, "uFogColor")
             uFogDensity = GLES20.glGetUniformLocation(worldProgram, "uFogDensity")
             uNightFactor = GLES20.glGetUniformLocation(worldProgram, "uNightFactor")
+            uFlashPos = GLES20.glGetUniformLocation(worldProgram, "uFlashPos")
+            uFlashColor = GLES20.glGetUniformLocation(worldProgram, "uFlashColor")
         }
         if (skyProgram != 0) {
             uSkyZenith = GLES20.glGetUniformLocation(skyProgram, "uZenith")
@@ -129,9 +140,9 @@ class CombatGLRenderer(
             audioEvents = sim.drainAudioEvents()
 
             hudPushAccum += dt
-            if (hudPushAccum >= 0.045f) {
+            val shouldPushHud = hudPushAccum >= 0.045f
+            if (shouldPushHud) {
                 hudPushAccum = 0f
-                hudSnapToPush = sim.buildHudSnapshot()
             }
 
             val cityDef = MissionCatalog.cityById(sim.mission.cityId)
@@ -186,6 +197,8 @@ class CombatGLRenderer(
             GLES20.glUniform3f(uFogColor, fogCol[0], fogCol[1], fogCol[2])
             GLES20.glUniform1f(uFogDensity, profile.fogDensity)
             GLES20.glUniform1f(uNightFactor, profile.nightFactor)
+            GLES20.glUniform3f(uFlashPos, sim.flashLightPos.x, sim.flashLightPos.y, sim.flashLightPos.z)
+            GLES20.glUniform3f(uFlashColor, sim.flashLightRgb[0], sim.flashLightRgb[1], sim.flashLightRgb[2])
 
             // 4. Draw Ground Plane
             val groundPattern = when (sim.city.groundMaterial) {
@@ -366,8 +379,8 @@ class CombatGLRenderer(
                     val worldWz = v.position.z - wx * sinV + wz * cosV
                     m.drawPart(
                         m.cylinder, vpMatrix, null,
-                        worldWx, 0.38f, worldWz, 0.42f, 0.74f, 0.42f,
-                        rotYDeg = vYawDeg,
+                        worldWx, 0.37f, worldWz, 0.74f, 0.36f, 0.74f,
+                        rotYDeg = vYawDeg, rotXDeg = sim.roverWheelSpinDeg, rotZDeg = 90f,
                         uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern,
                         rgb = floatArrayOf(0.11f, 0.11f, 0.12f), rough = 0.90f, metal = 0.15f
                     )
@@ -487,6 +500,60 @@ class CombatGLRenderer(
                     enemyArchetype = e.archetype,
                     uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern
                 )
+                // Sniper red laser sight beam when locked onto player
+                if (e.archetype == EnemyArchetype.PRECISION_MARKSMAN &&
+                    (e.state == EnemyAiState.ENGAGE || e.state == EnemyAiState.ALERT)
+                ) {
+                    val laserStart = Vec3(e.position.x, e.position.y + e.height * 0.78f, e.position.z)
+                    val laserTarget = Vec3(p.position.x, p.position.y + p.eyeHeight * 0.85f, p.position.z)
+                    if (sim.city.hasLineOfSight(laserStart, laserTarget)) {
+                        val delta = laserTarget - laserStart
+                        val len = delta.length().coerceAtMost(58f)
+                        if (len > 1f) {
+                            val mid = laserStart + delta * 0.5f
+                            val lYawDeg = Math.toDegrees(atan2(delta.x.toDouble(), delta.z.toDouble())).toFloat()
+                            val horiz = sqrt(delta.x * delta.x + delta.z * delta.z)
+                            val lPitchDeg = -Math.toDegrees(atan2(delta.y.toDouble(), horiz.toDouble())).toFloat()
+                            m.drawPart(
+                                m.cube, vpMatrix, null,
+                                mid.x, mid.y, mid.z, 0.018f, 0.018f, len,
+                                rotYDeg = lYawDeg, rotXDeg = lPitchDeg,
+                                uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern,
+                                rgb = floatArrayOf(1.0f, 0.14f, 0.12f), emissive = 1.95f
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 9b. Draw Active Frag Grenades & Expanding 3D Explosion Fireballs
+            for (i in sim.activeGrenades.indices) {
+                val g = sim.activeGrenades[i]
+                m.drawPart(
+                    m.sphere, vpMatrix, null,
+                    g.position.x, g.position.y, g.position.z, 0.22f, 0.26f, 0.22f,
+                    uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern,
+                    rgb = floatArrayOf(0.24f, 0.34f, 0.20f), rough = 0.6f, metal = 0.45f
+                )
+                val blink = if (((g.fuse * 10f).toInt() % 2) == 0) 1.75f else 0.35f
+                m.drawPart(
+                    m.sphere, vpMatrix, null,
+                    g.position.x, g.position.y + 0.16f, g.position.z, 0.09f, 0.09f, 0.09f,
+                    uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern,
+                    rgb = floatArrayOf(1.0f, 0.22f, 0.14f), emissive = blink
+                )
+            }
+            for (i in sim.explosionFlashes.indices) {
+                val ef = sim.explosionFlashes[i]
+                val progress = 1f - (ef.life / ef.maxLife).coerceIn(0f, 1f)
+                val rad = ef.radius * (0.45f + progress * 1.15f)
+                val glow = (1f - progress).coerceIn(0.15f, 1f)
+                m.drawPart(
+                    m.sphere, vpMatrix, null,
+                    ef.position.x, ef.position.y, ef.position.z, rad, rad * 0.85f, rad,
+                    uMVP = uMVP, uModel = uModel, uColor = uColor, uRough = uRough, uMetal = uMetal, uEmissive = uEmissive, uPattern = uPattern,
+                    rgb = floatArrayOf(1.0f, 0.62f * glow + 0.22f, 0.16f * glow), emissive = 1.95f * glow
+                )
             }
 
             // 10. Draw Bullet Tracers
@@ -531,10 +598,110 @@ class CombatGLRenderer(
                     rgb = wp.colorRgb, emissive = 0.35f
                 )
             }
+
+            // 13. Build HUD Snapshot with pixel-exact 3D->2D projected enemy health bars & objective directional indicator
+            if (shouldPushHud) {
+                val enemyBars = projectEnemyBars(sim, camPos)
+                val objIndicator = projectObjectiveIndicator(sim)
+                hudSnapToPush = sim.buildHudSnapshot().copy(
+                    enemyBars = enemyBars,
+                    objectiveIndicator = objIndicator
+                )
+            }
         }
 
         // Dispatch callbacks outside simLock to prevent any lock inversion
         if (audioEvents.isNotEmpty()) onAudioEvents(audioEvents)
         hudSnapToPush?.let(onHudUpdate)
+    }
+
+    private fun projectWorldToScreen(wx: Float, wy: Float, wz: Float): Triple<Float, Float, Boolean> {
+        tmpWorldVec[0] = wx
+        tmpWorldVec[1] = wy
+        tmpWorldVec[2] = wz
+        tmpWorldVec[3] = 1f
+        Matrix.multiplyMV(tmpClipVec, 0, vpMatrix, 0, tmpWorldVec, 0)
+        val w = tmpClipVec[3]
+        if (abs(w) < 0.001f) return Triple(0.5f, 0.5f, false)
+        val inFront = w > 0.05f
+        val invW = 1f / abs(w)
+        var ndcX = tmpClipVec[0] * invW
+        var ndcY = tmpClipVec[1] * invW
+        if (!inFront) {
+            ndcX = -ndcX
+            ndcY = -ndcY
+        }
+        val sx = (ndcX + 1f) * 0.5f
+        val sy = (1f - ndcY) * 0.5f
+        return Triple(sx, sy, inFront)
+    }
+
+    private fun projectEnemyBars(sim: CombatSimulation, camPos: Vec3): List<ProjectedEnemyBar> {
+        val result = ArrayList<ProjectedEnemyBar>(8)
+        for (i in sim.enemies.indices) {
+            val e = sim.enemies[i]
+            if (!e.isAlive) continue
+            val dist = e.position.distanceXZ(camPos)
+            if (dist > 44f) continue
+            val headPos = Vec3(e.position.x, e.position.y + e.height + 0.32f, e.position.z)
+            val totalMax = (e.maxHealth + e.maxArmor).coerceAtLeast(1f)
+            val frac = ((e.health + e.armor) / totalMax).coerceIn(0f, 1f)
+            // Show bar for injured enemies, bosses, snipers, or close engaged hostiles with LOS
+            val shouldShow = frac < 0.99f || e.archetype.isBoss || e.archetype == EnemyArchetype.PRECISION_MARKSMAN || dist < 24f
+            if (!shouldShow) continue
+            if (!sim.city.hasLineOfSight(camPos, Vec3(e.position.x, e.position.y + e.height * 0.65f, e.position.z))) continue
+            val (sx, sy, inFront) = projectWorldToScreen(headPos.x, headPos.y, headPos.z)
+            if (inFront && sx in 0.04f..0.96f && sy in 0.08f..0.90f) {
+                result.add(
+                    ProjectedEnemyBar(
+                        screenX = sx,
+                        screenY = sy,
+                        healthFrac = frac,
+                        isBoss = e.archetype.isBoss,
+                        isSniper = e.archetype == EnemyArchetype.PRECISION_MARKSMAN
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    private fun projectObjectiveIndicator(sim: CombatSimulation): ObjectiveEdgeIndicator? {
+        val targetPos = when (sim.mode) {
+            GameMode.DEFENSE -> Vec3(sim.defenseCorePosition.x, 2.3f, sim.defenseCorePosition.z)
+            GameMode.CAMPAIGN -> sim.currentObjective?.let { Vec3(it.targetX, 2.2f, it.targetZ) } ?: return null
+            else -> return null
+        }
+        val distMeters = sim.player.position.distanceXZ(targetPos).toInt()
+        val (rawX, rawY, inFront) = projectWorldToScreen(targetPos.x, targetPos.y, targetPos.z)
+        val onScreen = inFront && rawX in 0.08f..0.92f && rawY in 0.14f..0.84f
+        if (onScreen) {
+            return ObjectiveEdgeIndicator(
+                screenX = rawX,
+                screenY = rawY,
+                angleDeg = 180f,
+                offScreen = false,
+                distanceMeters = distMeters
+            )
+        }
+        val dx = rawX - 0.5f
+        val dy = rawY - 0.5f
+        val angleDeg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
+        val maxEdgeX = 0.41f
+        val maxEdgeY = 0.34f
+        val scale = maxOf(
+            if (abs(dx) > 0.0001f) abs(dx) / maxEdgeX else 0f,
+            if (abs(dy) > 0.0001f) abs(dy) / maxEdgeY else 0f,
+            1f
+        )
+        val clampedX = (0.5f + dx / scale).coerceIn(0.08f, 0.92f)
+        val clampedY = (0.5f + dy / scale).coerceIn(0.16f, 0.84f)
+        return ObjectiveEdgeIndicator(
+            screenX = clampedX,
+            screenY = clampedY,
+            angleDeg = angleDeg,
+            offScreen = true,
+            distanceMeters = distMeters
+        )
     }
 }

@@ -47,6 +47,7 @@ data class GameSettings(
     val aimSensitivity: Float = 0.65f,
     val invertY: Boolean = false,
     val aimAssist: Boolean = true,
+    val autoFireEnabled: Boolean = false,
     val vibrationEnabled: Boolean = true,
     val crosshairStyle: CrosshairStyle = CrosshairStyle.DYNAMIC,
     val subtitlesEnabled: Boolean = true,

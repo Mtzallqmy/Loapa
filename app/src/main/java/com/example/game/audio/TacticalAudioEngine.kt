@@ -32,13 +32,28 @@ class TacticalAudioEngine {
     private var settings: GameSettings = GameSettings()
     @Volatile
     private var released = false
+    @Volatile
+    private var musicPaused = false
+    @Volatile
+    private var combatMusicActive = false
+
+    private var musicThread: Thread? = null
 
     init {
         executor.execute { prebuildSounds() }
+        startMusicLoop()
     }
 
     fun updateSettings(newSettings: GameSettings) {
         settings = newSettings
+    }
+
+    fun setCombatMusicMode(inCombat: Boolean) {
+        combatMusicActive = inCombat
+    }
+
+    fun setPaused(paused: Boolean) {
+        musicPaused = paused
     }
 
     fun playUiClick() {
@@ -47,7 +62,10 @@ class TacticalAudioEngine {
 
     fun handleEvent(event: SimAudioEvent) {
         when (event) {
-            is SimAudioEvent.WeaponFired -> playCached("shot_${event.weaponId.id}", volumeScale = 0.95f, minIntervalMs = 55L)
+            is SimAudioEvent.WeaponFired -> {
+                val key = if (event.suppressed) "shot_suppressed" else "shot_${event.weaponId.id}"
+                playCached(key, volumeScale = if (event.suppressed) 0.62f else 0.95f, minIntervalMs = 55L)
+            }
             is SimAudioEvent.Reload -> playCached("reload", volumeScale = 0.72f, minIntervalMs = 200L)
             is SimAudioEvent.Footstep -> {
                 val key = if (event.material == SurfaceMaterial.SAND) "step_sand" else "step_hard"
@@ -55,6 +73,10 @@ class TacticalAudioEngine {
             }
             is SimAudioEvent.HitConfirm -> playCached(if (event.headshot) "hit_head" else "hit_body", volumeScale = 0.75f, minIntervalMs = 45L)
             is SimAudioEvent.Impact -> playCached("impact", volumeScale = 0.50f, minIntervalMs = 70L)
+            is SimAudioEvent.Explosion -> playCached("explosion", volumeScale = 1.0f, minIntervalMs = 180L)
+            is SimAudioEvent.GrenadeThrown -> playCached("grenade_throw", volumeScale = 0.65f, minIntervalMs = 200L)
+            is SimAudioEvent.MedkitUsed -> playCached("medkit_use", volumeScale = 0.78f, minIntervalMs = 250L)
+            is SimAudioEvent.RoverEnginePulse -> playCached("rover_engine", volumeScale = 0.42f, minIntervalMs = 280L)
             is SimAudioEvent.PlayerDamaged -> playCached("player_hit", volumeScale = 0.85f, minIntervalMs = 120L)
             is SimAudioEvent.Checkpoint -> playCached("checkpoint", volumeScale = 0.70f, minIntervalMs = 250L)
             is SimAudioEvent.ObjectiveComplete -> playCached("checkpoint", volumeScale = 0.80f, minIntervalMs = 250L)
@@ -80,7 +102,12 @@ class TacticalAudioEngine {
         cache["shot_${WeaponId.MG48_LMG.id}"] = synthGunshot(0.18f, 130f, 0.90f, 15f)
         cache["shot_${WeaponId.M9S_SIDEARM.id}"] = synthGunshot(0.12f, 270f, 0.68f, 24f)
         cache["shot_${WeaponId.RAIL_X1_HEAVY.id}"] = synthPulseShot(0.26f)
+        cache["shot_suppressed"] = synthSuppressedShot()
 
+        cache["explosion"] = synthExplosion()
+        cache["grenade_throw"] = synthTone(0.16f, 480f, 180f, 0.50f)
+        cache["medkit_use"] = synthChord(0.36f, floatArrayOf(587.33f, 739.99f, 880.0f))
+        cache["rover_engine"] = synthRoverEngine()
         cache["reload"] = synthReload()
         cache["step_hard"] = synthFootstep(isSand = false)
         cache["step_sand"] = synthFootstep(isSand = true)
@@ -260,8 +287,163 @@ class TacticalAudioEngine {
         return out
     }
 
+    private fun synthSuppressedShot(): ShortArray {
+        val n = (sampleRate * 0.11f).toInt()
+        val out = ShortArray(n)
+        val rng = Random(88)
+        var lp = 0f
+        for (i in 0 until n) {
+            val t = i.toFloat() / sampleRate
+            val env = exp(-t * 36f)
+            val white = rng.nextFloat() * 2f - 1f
+            lp = lp * 0.72f + white * 0.28f
+            val click = sin(2.0 * PI * 310.0 * exp(-t * 24.0) * t).toFloat() * exp(-t * 48f)
+            val s = ((lp * 0.55f + click * 0.45f) * env * 0.75f).coerceIn(-1f, 1f)
+            out[i] = (s * 28000f).toInt().toShort()
+        }
+        return out
+    }
+
+    private fun synthExplosion(): ShortArray {
+        val n = (sampleRate * 0.65f).toInt()
+        val out = ShortArray(n)
+        val rng = Random(911)
+        var lp = 0f
+        for (i in 0 until n) {
+            val t = i.toFloat() / sampleRate
+            val env = exp(-t * 4.4f)
+            val white = rng.nextFloat() * 2f - 1f
+            lp = lp * 0.84f + white * 0.16f
+            val subBoom = sin(2.0 * PI * (68.0 * exp(-t * 3.5) + 28.0) * t).toFloat() * exp(-t * 5.2f)
+            val crackle = white * exp(-t * 14f) * 0.35f
+            val s = ((subBoom * 0.75f + lp * 0.65f + crackle) * env).coerceIn(-1f, 1f)
+            out[i] = (s * 32000f).toInt().toShort()
+        }
+        return out
+    }
+
+    private fun synthRoverEngine(): ShortArray {
+        val n = (sampleRate * 0.28f).toInt()
+        val out = ShortArray(n)
+        for (i in 0 until n) {
+            val p = i.toFloat() / n
+            val t = i.toFloat() / sampleRate
+            val env = sin(PI * p).toFloat()
+            val hum = sin(2.0 * PI * 62.0 * t).toFloat() * 0.55f +
+                sin(2.0 * PI * 124.0 * t).toFloat() * 0.28f +
+                sin(2.0 * PI * 93.0 * t).toFloat() * 0.17f
+            out[i] = ((hum * env * 0.55f).coerceIn(-1f, 1f) * 24000f).toInt().toShort()
+        }
+        return out
+    }
+
+    private fun synthMusicLoop(combat: Boolean): ShortArray {
+        val seconds = 2.0f
+        val n = (sampleRate * seconds).toInt()
+        val out = ShortArray(n)
+        val rng = Random(if (combat) 777 else 333)
+        val beatDur = if (combat) 0.25f else 0.5f
+        for (i in 0 until n) {
+            val t = i.toFloat() / sampleRate
+            val beatPos = t % beatDur
+            // Dark D-minor military drone pad (D2 + A2 + F3)
+            val pad = sin(2.0 * PI * 73.42 * t).toFloat() * 0.24f +
+                sin(2.0 * PI * 110.0 * t).toFloat() * 0.16f +
+                sin(2.0 * PI * 174.61 * t).toFloat() * (0.08f + 0.04f * sin(2.0 * PI * 0.5 * t).toFloat())
+            var pulse = 0f
+            if (combat) {
+                val kick = sin(2.0 * PI * (95.0 * exp(-beatPos * 18.0) + 42.0) * beatPos).toFloat() * exp(-beatPos * 15f)
+                val stepIdx = ((t / beatDur).toInt()) % 8
+                val bassFreq = when (stepIdx) {
+                    0, 1, 4 -> 73.42
+                    2, 5 -> 82.41
+                    3, 6 -> 87.31
+                    else -> 65.41
+                }
+                val bass = sin(2.0 * PI * bassFreq * t).toFloat() * exp(-beatPos * 6f) * 0.26f
+                val hat = if (stepIdx % 2 == 1) (rng.nextFloat() * 2f - 1f) * exp(-beatPos * 45f) * 0.09f else 0f
+                pulse = kick * 0.34f + bass + hat
+            } else {
+                val heartbeat = sin(2.0 * PI * 55.0 * beatPos).toFloat() * exp(-beatPos * 11f) * 0.16f
+                pulse = heartbeat
+            }
+            val s = ((pad + pulse) * 0.65f).coerceIn(-1f, 1f)
+            out[i] = (s * 24000f).toInt().toShort()
+        }
+        return out
+    }
+
+    private fun startMusicLoop() {
+        val thread = Thread({
+            var track: AudioTrack? = null
+            try {
+                val menuLoop = synthMusicLoop(combat = false)
+                val combatLoop = synthMusicLoop(combat = true)
+                val minBuf = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(4096)
+
+                track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_GAME)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBuf * 2)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+
+                if (track.state != AudioTrack.STATE_INITIALIZED) return@Thread
+                var playing = false
+                val chunkSamples = 2205 // 100ms chunks for responsive pause/volume changes
+                var cursor = 0
+
+                while (!released) {
+                    val s = settings
+                    val vol = (s.masterVolume * s.musicVolume * 0.42f).coerceIn(0f, 1f)
+                    if (musicPaused || vol < 0.015f) {
+                        if (playing) {
+                            runCatching { track.pause(); track.flush() }
+                            playing = false
+                        }
+                        Thread.sleep(160L)
+                        continue
+                    }
+                    if (!playing) {
+                        track.play()
+                        playing = true
+                    }
+                    track.setVolume(vol)
+                    val buf = if (combatMusicActive) combatLoop else menuLoop
+                    val len = minOf(chunkSamples, buf.size - cursor)
+                    track.write(buf, cursor, len)
+                    cursor = (cursor + len) % buf.size
+                }
+            } catch (_: Throwable) {
+                // Safe exit in headless JVM/Robolectric tests or interrupted release
+            } finally {
+                runCatching { track?.stop() }
+                runCatching { track?.release() }
+            }
+        }, "CombatFronts-Music")
+        thread.isDaemon = true
+        musicThread = thread
+        thread.start()
+    }
+
     fun release() {
         released = true
+        musicThread?.interrupt()
         executor.shutdownNow()
     }
 }

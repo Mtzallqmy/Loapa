@@ -71,6 +71,8 @@ class MobileInputBridge {
     private var pendingInteract: Boolean = false
     private var pendingVault: Boolean = false
     private var pendingShoulderToggle: Boolean = false
+    private var pendingGrenade: Boolean = false
+    private var pendingMedkit: Boolean = false
 
     @Synchronized
     fun addLookDelta(dxRad: Float, dyRad: Float) {
@@ -85,6 +87,8 @@ class MobileInputBridge {
     @Synchronized fun triggerInteract() { pendingInteract = true }
     @Synchronized fun triggerVault() { pendingVault = true }
     @Synchronized fun triggerToggleShoulder() { pendingShoulderToggle = true }
+    @Synchronized fun triggerGrenade() { pendingGrenade = true }
+    @Synchronized fun triggerMedkit() { pendingMedkit = true }
 
     @Synchronized
     fun reset() {
@@ -93,6 +97,7 @@ class MobileInputBridge {
         pendingLookX = 0f; pendingLookY = 0f
         pendingJump = false; pendingReload = false; pendingCover = false; pendingSwitch = false
         pendingInteract = false; pendingVault = false; pendingShoulderToggle = false
+        pendingGrenade = false; pendingMedkit = false
     }
 
     @Synchronized
@@ -112,7 +117,9 @@ class MobileInputBridge {
             switchWeaponPressed = pendingSwitch,
             interactPressed = pendingInteract,
             vaultPressed = pendingVault,
-            toggleShoulderPressed = pendingShoulderToggle
+            toggleShoulderPressed = pendingShoulderToggle,
+            grenadePressed = pendingGrenade,
+            medkitPressed = pendingMedkit
         )
         pendingLookX = 0f
         pendingLookY = 0f
@@ -123,6 +130,8 @@ class MobileInputBridge {
         pendingInteract = false
         pendingVault = false
         pendingShoulderToggle = false
+        pendingGrenade = false
+        pendingMedkit = false
         return state
     }
 }
@@ -157,6 +166,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun navigate(target: GameScreen) {
         audioEngine.playUiClick()
+        audioEngine.setCombatMusicMode(target == GameScreen.GAMEPLAY)
         _screen.value = target
     }
 
@@ -209,6 +219,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         activeSimRef.set(sim)
         _hudSnapshot.value = sim.buildHudSnapshot()
         updateSave { it.copy(lastPlayedMission = missionDef.number) }
+        audioEngine.setCombatMusicMode(true)
         _screen.value = GameScreen.GAMEPLAY
     }
 
@@ -227,6 +238,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val sim = CombatSimulation(def, data, mode = GameMode.SURVIVAL, weatherCondition = weather)
         activeSimRef.set(sim)
         _hudSnapshot.value = sim.buildHudSnapshot()
+        audioEngine.setCombatMusicMode(true)
         _screen.value = GameScreen.GAMEPLAY
     }
 
@@ -245,6 +257,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val sim = CombatSimulation(def, data, mode = GameMode.DEFENSE, weatherCondition = weather)
         activeSimRef.set(sim)
         _hudSnapshot.value = sim.buildHudSnapshot()
+        audioEngine.setCombatMusicMode(true)
         _screen.value = GameScreen.GAMEPLAY
     }
 
@@ -263,6 +276,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val sim = CombatSimulation(def, data, mode = GameMode.CHALLENGES, weatherCondition = ch.weather, challenge = ch)
         activeSimRef.set(sim)
         _hudSnapshot.value = sim.buildHudSnapshot()
+        audioEngine.setCombatMusicMode(true)
         _screen.value = GameScreen.GAMEPLAY
     }
 
@@ -275,6 +289,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val summary = synchronized(sim.simLock) { sim.buildSummary() }
             applyMissionOutcome(summary)
             _lastSummary.value = summary
+            audioEngine.setCombatMusicMode(false)
             _screen.value = GameScreen.MISSION_RESULT
         }
     }
@@ -283,8 +298,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val vibrate = _saveData.value.settings.vibrationEnabled
         for (ev in events) {
             audioEngine.handleEvent(ev)
-            if (vibrate && (ev is SimAudioEvent.WeaponFired || ev is SimAudioEvent.PlayerDamaged)) {
-                triggerHaptic(if (ev is SimAudioEvent.PlayerDamaged) 45L else 16L)
+            if (vibrate && (ev is SimAudioEvent.WeaponFired || ev is SimAudioEvent.PlayerDamaged || ev is SimAudioEvent.Explosion)) {
+                val dur = when (ev) {
+                    is SimAudioEvent.Explosion -> 65L
+                    is SimAudioEvent.PlayerDamaged -> 45L
+                    else -> 16L
+                }
+                triggerHaptic(dur)
             }
             if (ev is SimAudioEvent.Checkpoint) {
                 activeSimRef.get()?.let { sim ->
@@ -293,6 +313,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun onAppPaused() {
+        audioEngine.setPaused(true)
+        pauseGame()
+    }
+
+    fun onAppResumed() {
+        audioEngine.setPaused(false)
     }
 
     fun pauseGame() {
@@ -374,6 +403,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
         activeSimRef.set(null)
         inputBridge.reset()
+        audioEngine.setCombatMusicMode(false)
         _screen.value = GameScreen.MAIN_MENU
     }
 
@@ -555,6 +585,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         updateSave { cur ->
             val next = transform(cur.settings)
             audioEngine.updateSettings(next)
+            activeSimRef.get()?.autoFireEnabled = next.autoFireEnabled
             cur.copy(settings = next)
         }
     }

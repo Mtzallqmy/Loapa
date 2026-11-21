@@ -164,6 +164,7 @@ class SaveManager(private val saveDir: File) {
         sObj.put("aimSensitivity", s.aimSensitivity.toDouble())
         sObj.put("invertY", s.invertY)
         sObj.put("aimAssist", s.aimAssist)
+        sObj.put("autoFireEnabled", s.autoFireEnabled)
         sObj.put("vibrationEnabled", s.vibrationEnabled)
         sObj.put("crosshairStyle", s.crosshairStyle.id)
         sObj.put("subtitlesEnabled", s.subtitlesEnabled)
@@ -322,6 +323,7 @@ class SaveManager(private val saveDir: File) {
             aimSensitivity = (sObj?.optDouble("aimSensitivity", 0.65) ?: 0.65).toFloat().coerceIn(0.25f, 1.5f),
             invertY = sObj?.optBoolean("invertY", false) ?: false,
             aimAssist = sObj?.optBoolean("aimAssist", true) ?: true,
+            autoFireEnabled = sObj?.optBoolean("autoFireEnabled", false) ?: false,
             vibrationEnabled = sObj?.optBoolean("vibrationEnabled", true) ?: true,
             crosshairStyle = CrosshairStyle.entries.firstOrNull { it.id == sObj?.optString("crosshairStyle") } ?: CrosshairStyle.DYNAMIC,
             subtitlesEnabled = sObj?.optBoolean("subtitlesEnabled", true) ?: true,

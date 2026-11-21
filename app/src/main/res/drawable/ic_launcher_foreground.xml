@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Tactical Shield Crest (strictly inside 66dp safe zone: 21..87) -->
+    <path
+        android:fillColor="#1C2733"
+        android:pathData="M54,23 L78,32 L78,56 C78,70 67,80 54,85 C41,80 30,70 30,56 L30,32 Z" />
+
+    <!-- Brushed Desert-Gold Shield Rim -->
+    <path
+        android:fillColor="#E5A93C"
+        android:pathData="M54,21 L80,31 L80,56 C80,71.5 68.5,82 54,87 C39.5,82 28,71.5 28,56 L28,31 Z M54,26.2 L33,34.2 L33,56 C33,68.2 42.2,76.8 54,81.4 C65.8,76.8 75,68.2 75,56 L75,34.2 Z" />
+
+    <!-- Tactical Double Military Chevrons -->
+    <path
+        android:fillColor="#FFCA62"
+        android:pathData="M54,36 L68,46 L68,52 L54,42 L40,52 L40,46 Z" />
+    <path
+        android:fillColor="#E5A93C"
+        android:pathData="M54,47 L66,56 L66,61.5 L54,52.5 L42,61.5 L42,56 Z" />
+
+    <!-- Precision Crosshair Reticle Center -->
+    <path
+        android:fillColor="#39C982"
+        android:pathData="M54,60 A5.5,5.5 0 1,0 54,71 A5.5,5.5 0 1,0 54,60 Z M54,62.4 A3.1,3.1 0 1,1 54,68.6 A3.1,3.1 0 1,1 54,62.4 Z" />
+    <path
+        android:fillColor="#FFCA62"
+        android:pathData="M53.1,56.5 L54.9,56.5 L54.9,60.5 L53.1,60.5 Z M53.1,70.5 L54.9,70.5 L54.9,74.5 L53.1,74.5 Z M45,64.6 L49,64.6 L49,66.4 L45,66.4 Z M59,64.6 L63,64.6 L63,66.4 L59,66.4 Z" />
+</vector>

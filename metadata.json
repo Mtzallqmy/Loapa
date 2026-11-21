@@ -1,0 +1,6 @@
+{
+  "name": "جبهات القتال",
+  "description": "Combat Fronts (جبهات القتال) v2.1.0 — 100% offline native 3D third-person military tactical shooter with 4 playable modes (Campaign, Survival, Defense, Challenges), 4 cities, 12 missions, 8 customizable weapons, dynamic weather, drivable tactical rover, Enemy AI 2.0, and full Arabic RTL/English HUD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
